@@ -35,8 +35,10 @@ usage of this module might look like this:
 
 import cgi
 import hashlib
+import hmac
 import time
 import urllib
+import base64
 
 # Find a JSON parser
 try:
@@ -80,8 +82,9 @@ class GraphAPI(object):
     get_user_from_cookie() method below to get the OAuth access token
     for the active user from the cookie saved by the SDK.
     """
-    def __init__(self, access_token=None):
+    def __init__(self, access_token=None, api_key=None):
         self.access_token = access_token
+        self.api_key = api_key
 
     def get_object(self, id, **args):
         """Fetchs the given object from the graph."""
@@ -156,41 +159,10 @@ class GraphAPI(object):
         self.request(id, post_args={"method": "delete"})
 
     def request(self, path, args=None, post_args=None):
-        """Fetches the given path in the Graph API.
-
-        We translate args to a valid query string. If post_args is given,
-        we send a POST request to the given path with the given arguments.
-        """
-        if not args: args = {}
-        if self.access_token:
-            if post_args is not None:
-                post_args["access_token"] = self.access_token
-            else:
-                args["access_token"] = self.access_token
-        post_data = None if post_args is None else urllib.urlencode(post_args)
-        file = urllib.urlopen("https://graph.facebook.com/" + path + "?" +
-                              urllib.urlencode(args), post_data)
-        try:
-            response = _parse_json(file.read())
-        finally:
-            file.close()
-        if response.get("error"):
-            raise GraphAPIError(response["error"]["type"],
-                                response["error"]["message"])
-        return response
+        return self._request("https://graph.facebook.com/", path, args, post_args)
 
     def api_request(self, path, args=None, post_args=None):
-        """Fetches the given path in the Graph API.
-
-        We translate args to a valid query string. If post_args is given,
-        we send a POST request to the given path with the given arguments.
-        """
         if not args: args = {}
-        if self.access_token:
-            if post_args is not None:
-                post_args["access_token"] = self.access_token
-            else:
-                args["access_token"] = self.access_token
         if self.api_key:
             if post_args is not None:
                 post_args["api_key"] = self.api_key
@@ -200,18 +172,34 @@ class GraphAPI(object):
             post_args["format"] = "json-strings"
         else:
             args["format"] = "json-strings"
+        return self._request("https://api.facebook.com/method/", path, args, post_args)
+
+    def _request(self, uri, path, args=None, post_args=None):
+        """Fetches the given path in the Graph API.
+
+        We translate args to a valid query string. If post_args is given,
+        we send a POST request to the given path with the given arguments.
+        """
+        if not args: args = {}
+        if self.access_token:
+            if post_args is not None:
+                post_args["access_token"] = self.access_token
+            else:
+                args["access_token"] = self.access_token
         post_data = None if post_args is None else urllib.urlencode(post_args)
-        file = urllib.urlopen("https://api.facebook.com/method/" + path + "?" +
+        file = urllib.urlopen(uri + path + "?" +
                               urllib.urlencode(args), post_data)
         try:
             response = _parse_json(file.read())
         finally:
             file.close()
-        if response.get("error"):
+        if isinstance(response, dict) and response.get("error"):
             raise GraphAPIError(response["error"]["type"],
                                 response["error"]["message"])
+        if isinstance(response, dict) and response.get("error_code"):
+            raise GraphAPIError(response["error_code"],
+                                response["error_msg"])
         return response
-
 
 class GraphAPIError(Exception):
     def __init__(self, type, message):
@@ -245,3 +233,23 @@ def get_user_from_cookie(cookies, app_id, app_secret):
         return args
     else:
         return None
+
+def get_user_from_signed_request(signed_request):
+    """Parses the signed_request parameter from Facebook canvas applications.
+    """
+    sig, payload = signed_request.split(u'.', 1)
+    return json.loads(base64_url_decode(payload))
+
+def check_signed_request(signed_request, app_secret):
+    sig, payload = signed_request.split(u'.', 1)
+    sig = base64_url_decode(sig)
+    expected_sig = hmac.new(
+        app_secret, msg=payload, digestmod=hashlib.sha256).digest()
+    return sig == expected_sig
+
+
+def base64_url_decode(data):
+    data = data.encode(u'ascii')
+    data += '=' * (4 - (len(data) % 4))
+    return base64.urlsafe_b64decode(data)
+
